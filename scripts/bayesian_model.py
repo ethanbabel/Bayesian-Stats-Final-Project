@@ -14,15 +14,21 @@ from tqdm import tqdm
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 OUTPUT_DIR = Path(__file__).resolve().parents[1] / "output"
-FEATURE_COLUMNS: Sequence[str] = ["0-3", "3-10", "10-16", "16-3P"]
-DIAGNOSTIC_FEATURE_COLUMNS: Sequence[str] = [*FEATURE_COLUMNS, "3P"]
+OFF_FEATURE_COLUMNS: Sequence[str] = ["0-3", "3-10", "10-16", "16-3P"]
+DEF_FEATURE_COLUMNS: Sequence[str] = ["def_0-3", "def_3-10", "def_10-16", "def_16-3P"]
+FEATURE_COLUMNS: Sequence[str] = [*OFF_FEATURE_COLUMNS, *DEF_FEATURE_COLUMNS]
+DIAGNOSTIC_FEATURE_COLUMNS: Sequence[str] = [
+    *OFF_FEATURE_COLUMNS,
+    "3P",
+    *DEF_FEATURE_COLUMNS,
+    "def_3P",
+]
 SEASONS: Sequence[str] = ["2004-05", "2024-25"]
 N_GAMES = 82
 
 # Weak normal priors: broad on the intercept, moderately broad on slopes
 PRIOR_SD_INTERCEPT = 5.0
 PRIOR_SD_SLOPE = 2.5
-
 
 @dataclass
 class SamplerResult:
@@ -39,7 +45,8 @@ def load_cleaned(season: str) -> pd.DataFrame:
     return pd.read_csv(path)
 
 def build_design(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
-    missing = [col for col in FEATURE_COLUMNS + ["3P", "wins"] if col not in df.columns]
+    required = list(FEATURE_COLUMNS) + ["3P", "def_3P", "wins"]
+    missing = [col for col in required if col not in df.columns]
     if missing:
         raise ValueError(f"Missing columns in data: {missing}")
     X = df[FEATURE_COLUMNS].to_numpy(dtype=float)
