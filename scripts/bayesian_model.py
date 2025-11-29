@@ -41,6 +41,8 @@ class SamplerResult:
     log_posterior_trace: np.ndarray
     param_names: Sequence[str]
     season: str
+    feature_means: np.ndarray
+    feature_stds: np.ndarray
 
 def load_cleaned(season: str) -> pd.DataFrame:
     path = DATA_DIR / f"cleaned_data_{season}.csv"
@@ -56,6 +58,17 @@ def build_design(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
     X = df[FEATURE_COLUMNS].to_numpy(dtype=float)
     y = df["wins"].to_numpy(dtype=float)
     return X, y
+
+def standardize_features(
+    X: np.ndarray, means: np.ndarray | None = None, stds: np.ndarray | None = None
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if means is None:
+        means = X.mean(axis=0)
+    if stds is None:
+        stds = X.std(axis=0, ddof=0)
+    stds_safe = np.where(stds > 0, stds, 1.0)
+    X_std = (X - means) / stds_safe
+    return X_std, means, stds_safe
 
 def log_likelihood(params: np.ndarray, X: np.ndarray, wins: np.ndarray, n_games: int) -> float:
     alpha = params[0]
@@ -86,18 +99,23 @@ def fit_model(
     step_scale_intercept: float = 0.2,
     step_scale_slope: float = 0.2,
     season_label: str = "",
+    feature_means: np.ndarray | None = None,
+    feature_stds: np.ndarray | None = None,
+    nest_tqdm: bool = False,
 ) -> SamplerResult:
+    X_std, means, stds = standardize_features(X, feature_means, feature_stds)
     initial = np.zeros(X.shape[1] + 1)
     step_scales = np.full_like(initial, step_scale_slope, dtype=float)
     step_scales[0] = step_scale_intercept
 
-    log_post = lambda params: log_posterior(params, X, wins, N_GAMES)
+    log_post = lambda params: log_posterior(params, X_std, wins, N_GAMES)
     draws, acc_rate, lp_trace = rw_metropolis(
         log_post=log_post,
         initial=initial,
         step_scales=step_scales,
         num_steps=num_steps,
         burn_in=burn_in,
+        nest_tqdm=nest_tqdm,
     )
     return SamplerResult(
         draws=draws,
@@ -105,6 +123,8 @@ def fit_model(
         log_posterior_trace=lp_trace,
         param_names=["alpha"] + list(FEATURE_COLUMNS),
         season=season_label,
+        feature_means=means,
+        feature_stds=stds,
     )
 
 def rw_metropolis(
@@ -113,9 +133,8 @@ def rw_metropolis(
     step_scales: np.ndarray,
     num_steps: int,
     burn_in: int,
+    nest_tqdm: bool = False,
 ) -> tuple[np.ndarray, float, np.ndarray]:
-    print("Starting Metropolis sampling...")
-
     rng = np.random.default_rng(SEED)
     params = initial.copy()
     current_lp = log_post(params)
@@ -124,7 +143,9 @@ def rw_metropolis(
     trace_lp: list[float] = []
     accepts = 0
 
-    for step in tqdm(range(num_steps)):
+    for step in tqdm(
+        range(num_steps), desc="Sampling", leave=(not nest_tqdm), position=(0 if not nest_tqdm else 1)
+    ):
         proposal = params + rng.normal(scale=step_scales, size=params.shape)
         proposal_lp = log_post(proposal)
         log_accept_ratio = proposal_lp - current_lp
@@ -249,7 +270,6 @@ def fit_season(
     step_scale_slope: float = 0.2,
 ) -> SamplerResult:
     df = load_cleaned(season)
-    print(df.loc[:, df.select_dtypes(include=np.number).columns].agg(['mean', 'std']))
     X, wins = build_design(df)
     return fit_model(
         X,
@@ -275,7 +295,7 @@ def cross_validate_season(
     folds = np.array_split(indices, k)
 
     fold_rows = []
-    for i, test_idx in enumerate(folds):
+    for i, test_idx in tqdm(enumerate(folds), total=len(folds), desc="CV folds"):
         train_idx = np.concatenate([fold for j, fold in enumerate(folds) if j != i])
         if len(test_idx) == 0 or len(train_idx) == 0:
             continue
@@ -292,12 +312,14 @@ def cross_validate_season(
             step_scale_intercept=step_scale_intercept,
             step_scale_slope=step_scale_slope,
             season_label=f"cv_fold_{i}",
+            nest_tqdm=True,
         )
 
         # Predict holdout teams using posterior mean parameters
         X_test, wins_test = build_design(test_df)
+        X_test_std = (X_test - fit.feature_means) / fit.feature_stds
         mean_params = fit.draws.mean(axis=0)
-        logits = mean_params[0] + X_test @ mean_params[1:]
+        logits = mean_params[0] + X_test_std @ mean_params[1:]
         p_hat = expit(logits)
         obs_rate = wins_test / N_GAMES
 
@@ -358,8 +380,9 @@ def main() -> None:
         # Posterior mean win probability per team (using posterior mean parameters)
         df = load_cleaned(season)
         X, wins = build_design(df)
+        X_std = (X - result.feature_means) / result.feature_stds
         mean_params = result.draws.mean(axis=0)
-        logits = mean_params[0] + X @ mean_params[1:]
+        logits = mean_params[0] + X_std @ mean_params[1:]
         win_probs = expit(logits)
         df_out = df[["team", "wins"]].copy()
         df_out["posterior_mean_win_prob"] = win_probs
@@ -388,9 +411,9 @@ def main() -> None:
         )
 
         # Cross-validated performance (k-fold over teams within season)
-        # cv_summary = cross_validate_season(df, k=df.shape[0])
-        # print("\nCross-validated metrics:")
-        # print(cv_summary.round(4))
+        cv_summary = cross_validate_season(df, k=df.shape[0])
+        print("\nCross-validated metrics:")
+        print(cv_summary.round(4))
 
 if __name__ == "__main__":
     main()
