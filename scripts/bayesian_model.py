@@ -8,17 +8,18 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy.special import expit
-from scipy.stats import norm
+from scipy.stats import norm, spearmanr
 
 from tqdm import tqdm
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 OUTPUT_DIR = Path(__file__).resolve().parents[1] / "output"
 FEATURE_COLUMNS: Sequence[str] = ["0-3", "3-10", "10-16", "16-3P"]
+DIAGNOSTIC_FEATURE_COLUMNS: Sequence[str] = [*FEATURE_COLUMNS, "3P"]
 SEASONS: Sequence[str] = ["2004-05", "2024-25"]
 N_GAMES = 82
 
-# Weak normal priors: broad on the intercept, moderately broad on slopes.
+# Weak normal priors: broad on the intercept, moderately broad on slopes
 PRIOR_SD_INTERCEPT = 5.0
 PRIOR_SD_SLOPE = 2.5
 
@@ -144,7 +145,7 @@ def plot_trace_and_acf(
     param_names: Sequence[str],
     season: str,
     output_dir: Path,
-    max_lag: int = 100,
+    max_lag: int = 1000,
 ) -> None:
     for idx, name in enumerate(param_names):
         series = draws[:, idx]
@@ -165,12 +166,48 @@ def plot_trace_and_acf(
         fig.savefig(output_dir / f"{season}_{name}_trace_acf.png", dpi=150)
         plt.close(fig)
 
+def residual_correlations(residuals: np.ndarray, df: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    for col in DIAGNOSTIC_FEATURE_COLUMNS:
+        feature = df[col].to_numpy(dtype=float)
+        pearson = float(np.corrcoef(feature, residuals)[0, 1])
+        spearman, _ = spearmanr(feature, residuals)
+        rows.append({"feature": col, "pearson_r": pearson, "spearman_r": float(spearman)})
+    return pd.DataFrame(rows).set_index("feature")
+
+def plot_residuals(
+    df: pd.DataFrame,
+    residuals: np.ndarray,
+    std_residuals: np.ndarray,
+    season: str,
+    output_dir: Path,
+) -> None:
+    for col in DIAGNOSTIC_FEATURE_COLUMNS:
+        x = df[col].to_numpy(dtype=float)
+
+        fig, axes = plt.subplots(2, 1, figsize=(7, 6), constrained_layout=True)
+
+        axes[0].scatter(x, residuals, alpha=0.7, s=22)
+        axes[0].axhline(0.0, color="gray", ls="--", lw=1)
+        axes[0].set_title(f"Residual vs {col} ({season})")
+        axes[0].set_xlabel(col)
+        axes[0].set_ylabel("Residual (obs - pred)")
+
+        axes[1].scatter(x, std_residuals, alpha=0.7, s=22, color="tab:orange")
+        axes[1].axhline(0.0, color="gray", ls="--", lw=1)
+        axes[1].set_title("Standardized residuals")
+        axes[1].set_xlabel(col)
+        axes[1].set_ylabel("Std residual")
+
+        fig.savefig(output_dir / f"{season}_residuals_{col}.png", dpi=150)
+        plt.close(fig)
+
 def fit_season(
     season: str,
     num_steps: int = 105_000,
     burn_in: int = 25_000,
-    step_scale_intercept: float = 0.5,
-    step_scale_slope: float = 0.5,
+    step_scale_intercept: float = 0.2,
+    step_scale_slope: float = 0.2,
 ) -> SamplerResult:
     df = load_cleaned(season)
     X, wins = build_design(df)
@@ -217,7 +254,7 @@ def main() -> None:
         print(f"Diagnostics saved to {OUTPUT_DIR}")
         print()
 
-        # Posterior mean win probability per team (using posterior mean parameters).
+        # Posterior mean win probability per team (using posterior mean parameters)
         df = load_cleaned(season)
         X, wins = build_design(df)
         mean_params = result.draws.mean(axis=0)
@@ -226,7 +263,22 @@ def main() -> None:
         df_out = df[["team", "wins"]].copy()
         df_out["posterior_mean_win_prob"] = win_probs
         df_out["posterior_mean_wins"] = win_probs * N_GAMES
-        print(df_out.sort_values("posterior_mean_win_prob", ascending=False))
+        # Brier score - mean squared error between predicted win probability and observed win rate
+        observed_win_rate = wins / N_GAMES
+        brier = float(np.mean((win_probs - observed_win_rate) ** 2))
+        baseline_p = float(observed_win_rate.mean())
+        brier_baseline = float(np.mean((baseline_p - observed_win_rate) ** 2))
+        skill = 1.0 - (brier / brier_baseline if brier_baseline > 0 else np.nan)
+        print(f"Brier score: {brier:.4f} | Baseline: {brier_baseline:.4f} | Skill: {skill:.3f}")
+        # Residual diagnostics: observed win rate minus predicted win probability
+        residuals = observed_win_rate - win_probs
+        var = win_probs * (1 - win_probs) / N_GAMES
+        std_residuals = residuals / np.sqrt(var + 1e-12)
+        corr_df = residual_correlations(residuals, df)
+        print("Residual correlations with shot shares (Pearson/Spearman):")
+        print(corr_df.round(3))
+        plot_residuals(df, residuals, std_residuals, season=season, output_dir=OUTPUT_DIR)
+        # print(df_out.sort_values("posterior_mean_win_prob", ascending=False))
 
 if __name__ == "__main__":
     main()
