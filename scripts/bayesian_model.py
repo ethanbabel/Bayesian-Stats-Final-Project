@@ -14,6 +14,9 @@ from tqdm import tqdm
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 OUTPUT_DIR = Path(__file__).resolve().parents[1] / "output"
+TRACE_ACF_DIR = OUTPUT_DIR / "trace_acf"
+RESIDUALS_DIR = OUTPUT_DIR / "residuals_analysis"
+
 OFF_FEATURE_COLUMNS: Sequence[str] = ["0-3", "3-10", "10-16", "16-3P"]
 DEF_FEATURE_COLUMNS: Sequence[str] = ["def_0-3", "def_3-10", "def_10-16", "def_16-3P"]
 FEATURE_COLUMNS: Sequence[str] = [*OFF_FEATURE_COLUMNS, *DEF_FEATURE_COLUMNS]
@@ -151,7 +154,7 @@ def plot_trace_and_acf(
     draws: np.ndarray,
     param_names: Sequence[str],
     season: str,
-    output_dir: Path,
+    output_dir: Path = TRACE_ACF_DIR,
     max_lag: int = 1000,
 ) -> None:
     for idx, name in enumerate(param_names):
@@ -187,7 +190,7 @@ def plot_residuals(
     residuals: np.ndarray,
     std_residuals: np.ndarray,
     season: str,
-    output_dir: Path,
+    output_dir: Path = RESIDUALS_DIR,
 ) -> None:
     for col in DIAGNOSTIC_FEATURE_COLUMNS:
         x = df[col].to_numpy(dtype=float)
@@ -252,12 +255,7 @@ def main() -> None:
         ess = effective_sample_size(result.draws)
         ess_df = pd.Series(ess, index=result.param_names, name="ess")
         print(ess_df.round(1))
-        plot_trace_and_acf(
-            result.draws,
-            result.param_names,
-            season=season,
-            output_dir=OUTPUT_DIR,
-        )
+        plot_trace_and_acf(result.draws, result.param_names, season=season)
         print(f"Diagnostics saved to {OUTPUT_DIR}")
         print()
 
@@ -270,6 +268,7 @@ def main() -> None:
         df_out = df[["team", "wins"]].copy()
         df_out["posterior_mean_win_prob"] = win_probs
         df_out["posterior_mean_wins"] = win_probs * N_GAMES
+
         # Brier score - mean squared error between predicted win probability and observed win rate
         observed_win_rate = wins / N_GAMES
         brier = float(np.mean((win_probs - observed_win_rate) ** 2))
@@ -277,15 +276,20 @@ def main() -> None:
         brier_baseline = float(np.mean((baseline_p - observed_win_rate) ** 2))
         skill = 1.0 - (brier / brier_baseline if brier_baseline > 0 else np.nan)
         print(f"Brier score: {brier:.4f} | Baseline: {brier_baseline:.4f} | Skill: {skill:.3f}")
-        # Residual diagnostics: observed win rate minus predicted win probability
+
+        # Residual diagnostics - observed win rate minus predicted win probability
         residuals = observed_win_rate - win_probs
         var = win_probs * (1 - win_probs) / N_GAMES
         std_residuals = residuals / np.sqrt(var + 1e-12)
         corr_df = residual_correlations(residuals, df)
         print("Residual correlations with shot shares (Pearson/Spearman):")
         print(corr_df.round(3))
-        plot_residuals(df, residuals, std_residuals, season=season, output_dir=OUTPUT_DIR)
-        # print(df_out.sort_values("posterior_mean_win_prob", ascending=False))
+        plot_residuals(df, residuals, std_residuals, season=season)
+
+        # Save data to csv
+        df_out.sort_values("posterior_mean_win_prob", ascending=False).to_csv(
+            OUTPUT_DIR / f"{season}_posterior_win_probs.csv", index=False
+        )
 
 if __name__ == "__main__":
     main()
