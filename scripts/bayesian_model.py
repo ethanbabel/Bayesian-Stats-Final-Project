@@ -30,9 +30,9 @@ SEASONS: Sequence[str] = ["2004-05", "2024-25"]
 N_GAMES = 82
 SEED = 2025
 
-# Weak normal priors: broad on the intercept, moderately broad on slopes
-PRIOR_SD_INTERCEPT = 5.0
-PRIOR_SD_SLOPE = 2.5
+# normal priors
+PRIOR_SD_INTERCEPT = 1.0
+PRIOR_SD_SLOPE = 1.0
 
 @dataclass
 class SamplerResult:
@@ -96,8 +96,8 @@ def fit_model(
     wins: np.ndarray,
     num_steps: int = 105_000,
     burn_in: int = 25_000,
-    step_scale_intercept: float = 0.2,
-    step_scale_slope: float = 0.2,
+    step_scale_intercept: float = 0.05,
+    step_scale_slope: float = 0.05,
     season_label: str = "",
     feature_means: np.ndarray | None = None,
     feature_stds: np.ndarray | None = None,
@@ -266,8 +266,8 @@ def fit_season(
     season: str,
     num_steps: int = 105_000,
     burn_in: int = 25_000,
-    step_scale_intercept: float = 0.2,
-    step_scale_slope: float = 0.2,
+    step_scale_intercept: float = 0.05,
+    step_scale_slope: float = 0.05,
 ) -> SamplerResult:
     df = load_cleaned(season)
     X, wins = build_design(df)
@@ -286,8 +286,8 @@ def cross_validate_season(
     k: int,
     num_steps: int = 50_000,
     burn_in: int = 10_000,
-    step_scale_intercept: float = 0.2,
-    step_scale_slope: float = 0.2,
+    step_scale_intercept: float = 0.05,
+    step_scale_slope: float = 0.05,
 ) -> pd.DataFrame:
     rng = np.random.default_rng(SEED)
     indices = np.arange(len(df))
@@ -411,9 +411,10 @@ def main() -> None:
         )
 
         # Cross-validated performance (k-fold over teams within season)
-        cv_summary = cross_validate_season(df, k=df.shape[0])
+        cv_summary = cross_validate_season(df, k=df.shape[0]) # Leave-one-out CV
         print("\nCross-validated metrics:")
         print(cv_summary.round(4))
+        print()
 
 if __name__ == "__main__":
     main()
