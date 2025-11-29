@@ -28,6 +28,7 @@ DIAGNOSTIC_FEATURE_COLUMNS: Sequence[str] = [
 ]
 SEASONS: Sequence[str] = ["2004-05", "2024-25"]
 N_GAMES = 82
+SEED = 2025
 
 # Weak normal priors: broad on the intercept, moderately broad on slopes
 PRIOR_SD_INTERCEPT = 5.0
@@ -77,17 +78,45 @@ def log_prior(params: np.ndarray) -> float:
 def log_posterior(params: np.ndarray, X: np.ndarray, wins: np.ndarray, n_games: int) -> float:
     return log_likelihood(params, X, wins, n_games) + log_prior(params)
 
+def fit_model(
+    X: np.ndarray,
+    wins: np.ndarray,
+    num_steps: int = 105_000,
+    burn_in: int = 25_000,
+    step_scale_intercept: float = 0.2,
+    step_scale_slope: float = 0.2,
+    season_label: str = "",
+) -> SamplerResult:
+    initial = np.zeros(X.shape[1] + 1)
+    step_scales = np.full_like(initial, step_scale_slope, dtype=float)
+    step_scales[0] = step_scale_intercept
+
+    log_post = lambda params: log_posterior(params, X, wins, N_GAMES)
+    draws, acc_rate, lp_trace = rw_metropolis(
+        log_post=log_post,
+        initial=initial,
+        step_scales=step_scales,
+        num_steps=num_steps,
+        burn_in=burn_in,
+    )
+    return SamplerResult(
+        draws=draws,
+        acceptance_rate=acc_rate,
+        log_posterior_trace=lp_trace,
+        param_names=["alpha"] + list(FEATURE_COLUMNS),
+        season=season_label,
+    )
+
 def rw_metropolis(
     log_post: Callable[[np.ndarray], float],
     initial: np.ndarray,
     step_scales: np.ndarray,
     num_steps: int,
     burn_in: int,
-    seed: int = 42,
 ) -> tuple[np.ndarray, float, np.ndarray]:
     print("Starting Metropolis sampling...")
 
-    rng = np.random.default_rng(seed)
+    rng = np.random.default_rng(SEED)
     params = initial.copy()
     current_lp = log_post(params)
 
@@ -220,26 +249,93 @@ def fit_season(
     step_scale_slope: float = 0.2,
 ) -> SamplerResult:
     df = load_cleaned(season)
+    print(df.loc[:, df.select_dtypes(include=np.number).columns].agg(['mean', 'std']))
     X, wins = build_design(df)
-
-    initial = np.zeros(X.shape[1] + 1)
-    step_scales = np.full_like(initial, step_scale_slope, dtype=float)
-    step_scales[0] = step_scale_intercept
-
-    log_post = lambda params: log_posterior(params, X, wins, N_GAMES)
-    draws, acc_rate, lp_trace = rw_metropolis(
-        log_post=log_post,
-        initial=initial,
-        step_scales=step_scales,
+    return fit_model(
+        X,
+        wins,
         num_steps=num_steps,
         burn_in=burn_in,
+        step_scale_intercept=step_scale_intercept,
+        step_scale_slope=step_scale_slope,
+        season_label=season,
     )
-    return SamplerResult(
-        draws=draws,
-        acceptance_rate=acc_rate,
-        log_posterior_trace=lp_trace,
-        param_names=["alpha"] + list(FEATURE_COLUMNS),
-        season=season,
+
+def cross_validate_season(
+    df: pd.DataFrame,
+    k: int,
+    num_steps: int = 50_000,
+    burn_in: int = 10_000,
+    step_scale_intercept: float = 0.2,
+    step_scale_slope: float = 0.2,
+) -> pd.DataFrame:
+    rng = np.random.default_rng(SEED)
+    indices = np.arange(len(df))
+    rng.shuffle(indices)
+    folds = np.array_split(indices, k)
+
+    fold_rows = []
+    for i, test_idx in enumerate(folds):
+        train_idx = np.concatenate([fold for j, fold in enumerate(folds) if j != i])
+        if len(test_idx) == 0 or len(train_idx) == 0:
+            continue
+
+        train_df = df.iloc[train_idx].reset_index(drop=True)
+        test_df = df.iloc[test_idx].reset_index(drop=True)
+
+        X_train, wins_train = build_design(train_df)
+        fit = fit_model(
+            X_train,
+            wins_train,
+            num_steps=num_steps,
+            burn_in=burn_in,
+            step_scale_intercept=step_scale_intercept,
+            step_scale_slope=step_scale_slope,
+            season_label=f"cv_fold_{i}",
+        )
+
+        # Predict holdout teams using posterior mean parameters
+        X_test, wins_test = build_design(test_df)
+        mean_params = fit.draws.mean(axis=0)
+        logits = mean_params[0] + X_test @ mean_params[1:]
+        p_hat = expit(logits)
+        obs_rate = wins_test / N_GAMES
+
+        sq_err = (p_hat - obs_rate) ** 2
+        brier = float(np.mean(sq_err))
+        baseline_p = float(train_df["wins"].mean() / N_GAMES)
+        sq_err_base = (baseline_p - obs_rate) ** 2
+        brier_baseline = float(np.mean(sq_err_base))
+        skill = 1.0 - (brier / brier_baseline if brier_baseline > 0 else np.nan)
+
+        fold_rows.append(
+            {
+                "fold": i,
+                "n_test": len(test_idx),
+                "brier_sum": float(np.sum(sq_err)),
+                "brier_base_sum": float(np.sum(sq_err_base)),
+                "brier": brier,
+                "brier_baseline": brier_baseline,
+                "skill": skill,
+            }
+        )
+
+    metrics = pd.DataFrame(fold_rows)
+    if metrics.empty:
+        raise ValueError("Cross-validation produced no folds; check k and data size.")
+
+    total_n = metrics["n_test"].sum()
+    pooled_brier = metrics["brier_sum"].sum() / total_n
+    pooled_brier_base = metrics["brier_base_sum"].sum() / total_n
+    pooled_skill = 1.0 - (pooled_brier / pooled_brier_base if pooled_brier_base > 0 else np.nan)
+
+    return pd.DataFrame(
+        {
+            "brier": pooled_brier,
+            "brier_baseline": pooled_brier_base,
+            "skill": pooled_skill,
+        },
+        index=["pooled"]
     )
 
 def main() -> None:
@@ -275,7 +371,7 @@ def main() -> None:
         baseline_p = float(observed_win_rate.mean())
         brier_baseline = float(np.mean((baseline_p - observed_win_rate) ** 2))
         skill = 1.0 - (brier / brier_baseline if brier_baseline > 0 else np.nan)
-        print(f"Brier score: {brier:.4f} | Baseline: {brier_baseline:.4f} | Skill: {skill:.3f}")
+        print(f"Training Brier score: {brier:.4f} | Baseline: {brier_baseline:.4f} | Skill: {skill:.3f}")
 
         # Residual diagnostics - observed win rate minus predicted win probability
         residuals = observed_win_rate - win_probs
@@ -290,6 +386,11 @@ def main() -> None:
         df_out.sort_values("posterior_mean_win_prob", ascending=False).to_csv(
             OUTPUT_DIR / f"{season}_posterior_win_probs.csv", index=False
         )
+
+        # Cross-validated performance (k-fold over teams within season)
+        # cv_summary = cross_validate_season(df, k=df.shape[0])
+        # print("\nCross-validated metrics:")
+        # print(cv_summary.round(4))
 
 if __name__ == "__main__":
     main()
