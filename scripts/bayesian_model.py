@@ -16,6 +16,7 @@ DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 OUTPUT_DIR = Path(__file__).resolve().parents[1] / "output"
 TRACE_ACF_DIR = OUTPUT_DIR / "trace_acf"
 RESIDUALS_DIR = OUTPUT_DIR / "residuals_analysis"
+PLOT_DIR = OUTPUT_DIR / "plots"
 
 OFF_FEATURE_COLUMNS: Sequence[str] = ["0-3", "3-10", "10-16", "16-3P"]
 DEF_FEATURE_COLUMNS: Sequence[str] = ["def_0-3", "def_3-10", "def_10-16", "def_16-3P"]
@@ -31,8 +32,13 @@ N_GAMES = 82
 SEED = 2025
 
 # normal priors
-PRIOR_SD_INTERCEPT = 1.0
-PRIOR_SD_SLOPE = 1.0
+PRIOR_SD_INTERCEPT = 0.5
+PRIOR_SD_SLOPE = 0.1
+
+# Palettes for contribution plots
+OFF_COLORS = plt.cm.Blues(np.linspace(0.45, 0.85, len(OFF_FEATURE_COLUMNS)))
+DEF_COLORS = plt.cm.Reds(np.linspace(0.45, 0.85, len(DEF_FEATURE_COLUMNS)))
+INTERCEPT_COLOR = "gray"
 
 @dataclass
 class SamplerResult:
@@ -262,6 +268,101 @@ def plot_residuals(
         fig.savefig(output_dir / f"{season}_residuals_{col}.png", dpi=150)
         plt.close(fig)
 
+def compute_win_contributions(
+    df: pd.DataFrame, mean_params: np.ndarray, feature_means: np.ndarray, feature_stds: np.ndarray
+) -> tuple[pd.DataFrame, np.ndarray]:
+    X = df[FEATURE_COLUMNS].to_numpy(dtype=float)
+    X_std = (X - feature_means) / feature_stds
+    # Standardize omitted 3P buckets for diagnostic contributions
+    z_3p = (df["3P"].to_numpy(dtype=float) - df["3P"].mean()) / (df["3P"].std(ddof=0) + 1e-12)
+    z_def_3p = (df["def_3P"].to_numpy(dtype=float) - df["def_3P"].mean()) / (df["def_3P"].std(ddof=0) + 1e-12)
+
+    intercept = mean_params[0]
+    betas = mean_params[1:]
+    betas_off = betas[: len(OFF_FEATURE_COLUMNS)]
+    betas_def = betas[len(OFF_FEATURE_COLUMNS) :]
+
+    # Implied betas for omitted 3P buckets (compositional contrast)
+    implied_beta_3p = -betas_off.sum()
+    implied_beta_def_3p = -betas_def.sum()
+
+    t_off = X_std[:, : len(OFF_FEATURE_COLUMNS)] * betas_off
+    t_def = X_std[:, len(OFF_FEATURE_COLUMNS) :] * betas_def
+    t_3p = implied_beta_3p * z_3p
+    t_def_3p = implied_beta_def_3p * z_def_3p
+
+    linear_sum = intercept + t_off.sum(axis=1) + t_def.sum(axis=1)
+    win_probs = expit(linear_sum)
+    win_pred = win_probs * N_GAMES
+
+    total_weight = intercept + t_off.sum(axis=1) + t_def.sum(axis=1) + t_3p + t_def_3p
+    total_weight = np.where(np.abs(total_weight) < 1e-8, np.sign(total_weight) * 1e-8 + 1e-8, total_weight)
+
+    contrib = {}
+    contrib["intercept"] = win_pred * (intercept / total_weight)
+    for idx, col in enumerate(OFF_FEATURE_COLUMNS):
+        term = t_off[:, idx]
+        contrib[col] = win_pred * (term / total_weight)
+    contrib["3P"] = win_pred * (t_3p / total_weight)
+    for idx, col in enumerate(DEF_FEATURE_COLUMNS):
+        term = t_def[:, idx]
+        contrib[col] = win_pred * (term / total_weight)
+    contrib["def_3P"] = win_pred * (t_def_3p / total_weight)
+
+    contrib_df = pd.DataFrame(contrib, index=df["team"])
+    contrib_df["win_pred"] = win_pred
+    return contrib_df, win_pred
+
+def plot_feature_contributions(contrib_df: pd.DataFrame, season: str) -> None:
+    teams = contrib_df.index.to_list()
+    n = len(teams)
+    x = np.arange(n)
+    width = 0.35
+
+    fig, ax = plt.subplots(figsize=(12, 6), constrained_layout=True)
+
+    off_cols = list(OFF_FEATURE_COLUMNS) + ["3P"]
+    def_cols = list(DEF_FEATURE_COLUMNS) + ["def_3P"]
+    neg_base = np.zeros(n)
+    color_seq = [INTERCEPT_COLOR] + list(OFF_COLORS) + [OFF_COLORS[-1]] + list(DEF_COLORS) + [DEF_COLORS[-1]]
+    col_seq = ["intercept"] + off_cols + def_cols
+
+    # Stack negatives downward at x - width/2
+    neg_x = x - width / 2
+    for col, color in zip(col_seq, color_seq):
+        vals = contrib_df[col].to_numpy()
+        vals = np.where(vals < 0, vals, 0.0)
+        ax.bar(neg_x, vals, width=width, bottom=neg_base, color=color, label=col)
+        neg_base += vals
+
+    # Stack positives upward starting from the negative total at x + width/2
+    pos_x = x + width / 2
+    pos_base = neg_base.copy()
+    for col, color in zip(col_seq, color_seq):
+        vals = contrib_df[col].to_numpy()
+        vals = np.where(vals > 0, vals, 0.0)
+        ax.bar(pos_x, vals, width=width, bottom=pos_base, color=color, label=col)
+        pos_base += vals
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(teams, rotation=75, ha="right", fontsize=8)
+    ax.set_ylabel("Predicted wins (stacked contributions)")
+    ax.set_title(f"Feature contributions to predicted wins ({season})")
+
+    handles, labels = ax.get_legend_handles_labels()
+    seen = {}
+    uniq_handles = []
+    uniq_labels = []
+    for h, l in zip(handles, labels):
+        if l and l not in seen:
+            seen[l] = True
+            uniq_handles.append(h)
+            uniq_labels.append(l)
+    ax.legend(uniq_handles, uniq_labels, bbox_to_anchor=(1.02, 1), loc="upper left")
+
+    fig.savefig(PLOT_DIR / f"{season}_feature_contributions.png", dpi=150)
+    plt.close(fig)
+
 def fit_season(
     season: str,
     num_steps: int = 105_000,
@@ -388,6 +489,11 @@ def main() -> None:
         df_out["posterior_mean_win_prob"] = win_probs
         df_out["posterior_mean_wins"] = win_probs * N_GAMES
 
+        contrib_df, _ = compute_win_contributions(df, mean_params, result.feature_means, result.feature_stds)
+        print("\nFeature contributions to predicted wins (posterior mean parameters):")
+        print(contrib_df.round(2))
+        contrib_df.to_csv(OUTPUT_DIR / f"{season}_feature_contributions.csv")
+
         # Brier score - mean squared error between predicted win probability and observed win rate
         observed_win_rate = wins / N_GAMES
         brier = float(np.mean((win_probs - observed_win_rate) ** 2))
@@ -404,6 +510,7 @@ def main() -> None:
         print("Residual correlations with shot shares (Pearson/Spearman):")
         print(corr_df.round(3))
         plot_residuals(df, residuals, std_residuals, season=season)
+        plot_feature_contributions(contrib_df, season)
 
         # Save data to csv
         df_out.sort_values("posterior_mean_win_prob", ascending=False).to_csv(
