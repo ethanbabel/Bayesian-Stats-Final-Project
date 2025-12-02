@@ -192,7 +192,7 @@ def autocorrelation(x: np.ndarray, max_lag: int) -> np.ndarray:
 
 def effective_sample_size(draws: np.ndarray, max_lag: int | None = None) -> np.ndarray:
     n, _ = draws.shape
-    max_lag = max_lag or min(1000, n // 2)
+    max_lag = max_lag or min(200, n // 2)
     ess = []
     for j in range(draws.shape[1]):
         acf = autocorrelation(draws[:, j], max_lag)
@@ -211,7 +211,7 @@ def plot_trace_and_acf(
     param_names: Sequence[str],
     season: str,
     output_dir: Path = TRACE_ACF_DIR,
-    max_lag: int = 1000,
+    max_lag: int = 200,
 ) -> None:
     for idx, name in enumerate(param_names):
         series = draws[:, idx]
@@ -314,51 +314,36 @@ def compute_win_contributions(
     return contrib_df, win_pred
 
 def plot_feature_contributions(contrib_df: pd.DataFrame, season: str) -> None:
-    teams = contrib_df.index.to_list()
-    n = len(teams)
-    x = np.arange(n)
-    width = 0.35
-
-    fig, ax = plt.subplots(figsize=(12, 6), constrained_layout=True)
-
+    # Plot contributions for the "average" team by averaging per-team contributions
     off_cols = list(OFF_FEATURE_COLUMNS) + ["3P"]
     def_cols = list(DEF_FEATURE_COLUMNS) + ["def_3P"]
-    neg_base = np.zeros(n)
-    color_seq = [INTERCEPT_COLOR] + list(OFF_COLORS) + [OFF_COLORS[-1]] + list(DEF_COLORS) + [DEF_COLORS[-1]]
     col_seq = ["intercept"] + off_cols + def_cols
+    color_seq = [INTERCEPT_COLOR] + list(OFF_COLORS) + [OFF_COLORS[-1]] + list(DEF_COLORS) + [DEF_COLORS[-1]]
 
-    # Stack negatives downward at x - width/2
-    neg_x = x - width / 2
-    for col, color in zip(col_seq, color_seq):
-        vals = contrib_df[col].to_numpy()
-        vals = np.where(vals < 0, vals, 0.0)
-        ax.bar(neg_x, vals, width=width, bottom=neg_base, color=color, label=col)
-        neg_base += vals
+    avg_contrib = contrib_df[col_seq].mean()
+    avg_total_wins = contrib_df["win_pred"].mean()
 
-    # Stack positives upward starting from the negative total at x + width/2
-    pos_x = x + width / 2
-    pos_base = neg_base.copy()
-    for col, color in zip(col_seq, color_seq):
-        vals = contrib_df[col].to_numpy()
-        vals = np.where(vals > 0, vals, 0.0)
-        ax.bar(pos_x, vals, width=width, bottom=pos_base, color=color, label=col)
-        pos_base += vals
+    x = np.arange(len(col_seq))
+    fig, ax = plt.subplots(figsize=(10, 5.5), constrained_layout=True)
 
+    bars = ax.bar(x, avg_contrib.values, color=color_seq)
+    ax.axhline(0.0, color="black", lw=1)
     ax.set_xticks(x)
-    ax.set_xticklabels(teams, rotation=75, ha="right", fontsize=8)
-    ax.set_ylabel("Predicted wins (stacked contributions)")
-    ax.set_title(f"Feature contributions to predicted wins ({season})")
+    ax.set_xticklabels(col_seq, rotation=45, ha="right", fontsize=9)
+    ax.set_ylabel("Predicted wins (average team)")
+    ax.set_title(f"Average feature contributions to predicted wins ({season})")
+    ax.text(
+        0.02,
+        0.95,
+        f"Mean predicted wins ≈ {avg_total_wins:.1f}",
+        transform=ax.transAxes,
+        ha="left",
+        va="top",
+        fontsize=9,
+    )
 
-    handles, labels = ax.get_legend_handles_labels()
-    seen = {}
-    uniq_handles = []
-    uniq_labels = []
-    for h, l in zip(handles, labels):
-        if l and l not in seen:
-            seen[l] = True
-            uniq_handles.append(h)
-            uniq_labels.append(l)
-    ax.legend(uniq_handles, uniq_labels, bbox_to_anchor=(1.02, 1), loc="upper left")
+    handles, labels = bars, col_seq
+    ax.legend(handles, labels, bbox_to_anchor=(1.02, 1), loc="upper left", title="Feature")
 
     fig.savefig(PLOT_DIR / f"{season}_feature_contributions.png", dpi=150)
     plt.close(fig)
