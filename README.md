@@ -28,7 +28,7 @@ $$
 w_i ~ Binomial(n_games=82, p_i)
 $$
 $$
-p_i = logistic(α + Σ_j β_j z_ij)
+p_i = \sigma (α + Σ_j β_j x_{ij})
 $$
 - Features: 8 distance-split shares (`0-3`, `3-10`, `10-16`, `16-3P` and defensive counterparts). The omitted 3P buckets are incorporated in contributions via compositional contrasts (implied β for 3P = negative sum of the other offense betas; same for defense).
 - Standardization: Each feature is z-scored using season-level means and std devs before modeling.
@@ -68,6 +68,8 @@ Key outputs (per season)
 - `output/{season}_posterior_win_probs.csv`: posterior mean win probabilities and wins per team.
 - `output/{season}_feature_contributions.csv`: per-team win contributions by feature (and intercept).
 - `output/plots/{season}_feature_contributions.png`: average-team feature contribution bars.
+- `output/plots/{season}_posterior_forest.png`: posterior band effects (mean ± 95% CI).
+- `output/plots/{season}_pred_vs_actual.png`: scatter of predicted vs actual win rates.
 - `output/trace_acf/*`: parameter trace + autocorrelation plots.
 - `output/residuals_analysis/*`: residual diagnostics vs features.
 

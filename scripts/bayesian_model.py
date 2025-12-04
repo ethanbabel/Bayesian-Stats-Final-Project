@@ -313,6 +313,81 @@ def compute_win_contributions(
     contrib_df["win_pred"] = win_pred
     return contrib_df, win_pred
 
+def summarize_band_posterior(draws: np.ndarray) -> pd.DataFrame:
+    """Summarize offense/defense bands plus reconstructed 3P contrasts."""
+    betas_off = draws[:, 1 : 1 + len(OFF_FEATURE_COLUMNS)]
+    betas_def = draws[:, 1 + len(OFF_FEATURE_COLUMNS) :]
+
+    implied_off_3p = -betas_off.sum(axis=1)
+    implied_def_3p = -betas_def.sum(axis=1)
+
+    band_names = list(OFF_FEATURE_COLUMNS) + ["3P"] + list(DEF_FEATURE_COLUMNS) + ["def_3P"]
+    band_arrays = [betas_off[:, i] for i in range(betas_off.shape[1])]
+    band_arrays.append(implied_off_3p)
+    band_arrays.extend(betas_def[:, i] for i in range(betas_def.shape[1]))
+    band_arrays.append(implied_def_3p)
+
+    rows = []
+    for name, arr in zip(band_names, band_arrays):
+        q = np.quantile(arr, [0.025, 0.5, 0.975])
+        rows.append(
+            {
+                "band": name,
+                "mean": float(arr.mean()),
+                "median": float(q[1]),
+                "low": float(q[0]),
+                "high": float(q[2]),
+            }
+        )
+    return pd.DataFrame(rows)
+
+def plot_posterior_forest(draws: np.ndarray, param_names: Sequence[str], season: str) -> pd.DataFrame:
+    """Plot posterior mean +/- 95% CI for each band and return interpretation table."""
+    summary_df = summarize_band_posterior(draws)
+
+    colors = (
+        list(OFF_COLORS)
+        + [OFF_COLORS[-1]]
+        + list(DEF_COLORS)
+        + [DEF_COLORS[-1]]
+    )
+
+    # Reverse order for a top-down forest plot
+    df_plot = summary_df.iloc[::-1].reset_index(drop=True)
+    y = np.arange(len(df_plot))
+
+    fig, ax = plt.subplots(figsize=(8.5, 6), constrained_layout=True)
+    ax.axvline(0.0, color="black", lw=1)
+
+    for idx, (row, color) in enumerate(zip(df_plot.itertuples(index=False), colors[::-1])):
+        err_low = row.mean - row.low
+        err_high = row.high - row.mean
+        ax.errorbar(
+            row.mean,
+            y[idx],
+            xerr=[[err_low], [err_high]],
+            fmt="o",
+            color=color,
+            ecolor=color,
+            elinewidth=1.6,
+            capsize=4,
+            markersize=6,
+        )
+
+    ax.set_yticks(y)
+    ax.set_yticklabels(df_plot["band"])
+    ax.set_xlabel("Posterior effect on log-odds of win (per SD change)")
+    ax.set_title(f"Posterior band effects (mean ± 95% CI) — {season}")
+
+    fig.savefig(PLOT_DIR / f"{season}_posterior_forest.png", dpi=150)
+    plt.close(fig)
+
+    summary_df["direction"] = summary_df.apply(
+        lambda r: "positive" if r["low"] > 0 else ("negative" if r["high"] < 0 else "mixed/uncertain"),
+        axis=1,
+    )
+    return summary_df
+
 def plot_feature_contributions(contrib_df: pd.DataFrame, season: str) -> None:
     # Plot contributions for the "average" team by averaging per-team contributions
     off_cols = list(OFF_FEATURE_COLUMNS) + ["3P"]
@@ -346,6 +421,38 @@ def plot_feature_contributions(contrib_df: pd.DataFrame, season: str) -> None:
     ax.legend(handles, labels, bbox_to_anchor=(1.02, 1), loc="upper left", title="Feature")
 
     fig.savefig(PLOT_DIR / f"{season}_feature_contributions.png", dpi=150)
+    plt.close(fig)
+
+def plot_pred_vs_actual(
+    teams: Sequence[str],
+    win_probs: np.ndarray,
+    observed_win_rate: np.ndarray,
+    season: str,
+) -> None:
+    """Scatter posterior predicted win probabilities vs actual win rates."""
+    fig, ax = plt.subplots(figsize=(6.5, 6), constrained_layout=True)
+    ax.scatter(observed_win_rate, win_probs, alpha=0.8, s=40, color="tab:blue")
+
+    # 45-degree reference line
+    lims = [
+        min(observed_win_rate.min(), win_probs.min()) - 0.02,
+        max(observed_win_rate.max(), win_probs.max()) + 0.02,
+    ]
+    ax.plot(lims, lims, color="gray", lw=1, ls="--", label="Perfect calibration")
+    ax.set_xlim(lims)
+    ax.set_ylim(lims)
+
+    ax.set_xlabel("Actual win rate")
+    ax.set_ylabel("Posterior mean predicted win probability")
+    ax.set_title(f"Predicted vs actual win probability ({season})")
+
+    # Light labeling to identify outliers without clutter
+    for team, x, y in zip(teams, observed_win_rate, win_probs):
+        if np.abs(y - x) > 0.05:
+            ax.annotate(team, (x, y), textcoords="offset points", xytext=(4, 4), fontsize=7)
+
+    ax.legend(loc="upper left")
+    fig.savefig(PLOT_DIR / f"{season}_pred_vs_actual.png", dpi=150)
     plt.close(fig)
 
 def fit_season(
@@ -463,6 +570,11 @@ def main() -> None:
         print(f"Diagnostics saved to {OUTPUT_DIR}")
         print()
 
+        band_summary = plot_posterior_forest(result.draws, result.param_names, season=season)
+        print("Posterior band effects (mean, 95% CI, direction):")
+        print(band_summary[["band", "mean", "low", "high", "direction"]].round(3).to_string(index=False))
+        print()
+
         # Posterior mean win probability per team (using posterior mean parameters)
         df = load_cleaned(season)
         X, wins = build_design(df)
@@ -496,6 +608,7 @@ def main() -> None:
         print(corr_df.round(3))
         plot_residuals(df, residuals, std_residuals, season=season)
         plot_feature_contributions(contrib_df, season)
+        plot_pred_vs_actual(df["team"].to_list(), win_probs, observed_win_rate, season)
 
         # Save data to csv
         df_out.sort_values("posterior_mean_win_prob", ascending=False).to_csv(
