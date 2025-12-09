@@ -244,26 +244,19 @@ def residual_correlations(residuals: np.ndarray, df: pd.DataFrame) -> pd.DataFra
 def plot_residuals(
     df: pd.DataFrame,
     residuals: np.ndarray,
-    std_residuals: np.ndarray,
     season: str,
     output_dir: Path = RESIDUALS_DIR,
 ) -> None:
     for col in DIAGNOSTIC_FEATURE_COLUMNS:
         x = df[col].to_numpy(dtype=float)
 
-        fig, axes = plt.subplots(2, 1, figsize=(7, 6), constrained_layout=True)
+        fig, ax = plt.subplots(figsize=(7, 4.5), constrained_layout=True)
 
-        axes[0].scatter(x, residuals, alpha=0.7, s=22)
-        axes[0].axhline(0.0, color="gray", ls="--", lw=1)
-        axes[0].set_title(f"Residual vs {col} ({season})")
-        axes[0].set_xlabel(col)
-        axes[0].set_ylabel("Residual (obs - pred)")
-
-        axes[1].scatter(x, std_residuals, alpha=0.7, s=22, color="tab:orange")
-        axes[1].axhline(0.0, color="gray", ls="--", lw=1)
-        axes[1].set_title("Standardized residuals")
-        axes[1].set_xlabel(col)
-        axes[1].set_ylabel("Std residual")
+        ax.scatter(x, residuals, alpha=0.7, s=22)
+        ax.axhline(0.0, color="gray", ls="--", lw=1)
+        ax.set_title(f"Residual vs {col} ({season})")
+        ax.set_xlabel(col)
+        ax.set_ylabel("Residual (obs - pred)")
 
         fig.savefig(output_dir / f"{season}_residuals_{col}.png", dpi=150)
         plt.close(fig)
@@ -601,12 +594,10 @@ def main() -> None:
 
         # Residual diagnostics - observed win rate minus predicted win probability
         residuals = observed_win_rate - win_probs
-        var = win_probs * (1 - win_probs) / N_GAMES
-        std_residuals = residuals / np.sqrt(var + 1e-12)
         corr_df = residual_correlations(residuals, df)
         print("Residual correlations with shot shares (Pearson/Spearman):")
         print(corr_df.round(3))
-        plot_residuals(df, residuals, std_residuals, season=season)
+        plot_residuals(df, residuals, season=season)
         plot_feature_contributions(contrib_df, season)
         plot_pred_vs_actual(df["team"].to_list(), win_probs, observed_win_rate, season)
 
