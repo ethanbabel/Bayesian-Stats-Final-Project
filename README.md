@@ -14,5 +14,7 @@ Bayesian modeling of NBA team win totals using shot profile data (both offensive
 - `latex/` – full write-up (`latex/report.pdf`), including latex source (`latex/report.tex`)
 - `prep/` – exploratitive notebooks/plots for project prep
 
-## Full Report
-See the detailed methodology and results: `latex/report.pdf`.
+## Full Report and Slide Deck
+See the detailed methodology and results: 
+- `Bayesian_FinalProject_Report.pdf`
+- `Bayesian_FinalProject_Slides.pdf`
