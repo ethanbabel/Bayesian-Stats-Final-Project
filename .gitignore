@@ -1,0 +1,13 @@
+# Ignore latex build files
+latex/*.aux
+latex/*.bbl
+latex/*.blg
+latex/*.log
+latex/*.out
+latex/*.fdb_latexmk
+latex/*.fls
+latex/*.synctex.gz
+latex/.DS_Store
+
+# Ignore neurIPS style files
+latex/Styles/

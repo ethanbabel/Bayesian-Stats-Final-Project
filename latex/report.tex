@@ -1,0 +1,651 @@
+\documentclass{article}
+\usepackage[final, nonatbib]{neurips_2024}
+\usepackage{amsmath, amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{natbib}
+\usepackage{hyperref}
+\usepackage{url}
+\bibliographystyle{unsrtnat}
+
+\title{NBA Shot Distribution \& Winning: A Bayesian Model}
+\author{
+  Ethan Babel \\
+  Johns Hopkins University \\
+  \texttt{ebabel1@jh.edu}
+}
+
+\begin{document}
+\makeatletter
+\renewcommand{\@noticestring}{}
+\makeatother
+
+\maketitle
+
+\begin{abstract}
+      Understanding how shot selection contributes to winning has become a central
+      theme in modern basketball analytics, especially as the NBA has shifted
+      toward a more prominent three point focus offensively over the past two decades. 
+      In this project, I study how the distribution of field-goal attempts a team both 
+      takes on offense and concedes on defense across standard distance bands affects 
+      the team's probability of winning games. I develop a Bayesian logistic regression 
+      model that uses each team's offensive and defensive shot-distance distributions as 
+      predictors. Posterior inference is done via Metropolis–Hastings sampling,
+      yielding full distributions over the effects of each shot band and enabling 
+      comparisons across eras.
+
+      \medskip
+
+      I apply the model to two NBA seasons separated by twenty years (2004-05 and
+      2024-25) to evaluate how the value of shot distribution has evolved over time.
+      The model achieves substantially higher predictive skill in the modern season
+      (Brier Skill Score: 0.26) compared to the earlier era (0.04), suggesting that
+      shot selection has become a far more impactful determinant of success in today's
+      spacing and efficiency driven league. Key findings indicate that in 2004-05, teams that
+      take a greater share of their shots from three-point range and the rim while limiting
+      the same areas defensively tend to win significantly more games. By 2024-25, these effects
+      lessened or even reversed, suggesting that teams have adapted to prioritize three-point 
+      shooting more universally, and indicating that some teams today may benefit from
+      diversifying their shot profiles back toward mid-range attempts. 
+\end{abstract}
+
+\section{Introduction}
+
+The past two decades have seen a dramatic transformation in how NBA teams
+structure their offenses. Long mid-range jumpers have steadily declined, while
+three-point attempts and shots at the rim have risen sharply. These changes are
+well documented in the basketball analytics literature and are often attributed
+to the growing influence of efficiency-based decision making, where the expected
+value of each shot type guides offensive schemes. Although this historical trend
+is clear, this project delves into determining to what extent a team’s shot 
+distribution can actually predict its success, as well as comparing the 
+importance of shot distribution across eras.
+
+I address these questions by developing a Bayesian model that links
+team-level win probabilities to offensive and defensive shot-distance
+distributions. Distance-based shot charts (such as the five standard NBA
+zones 0--3 ft, 3--10 ft, 10--16 ft, 16 ft -- 3 point line, and three-pointers) 
+provide a compact representation of a team's spatial tendencies. Teams differ not 
+only in where they choose to shoot but also in the types of shots they allow
+opponents to take. A comprehensive analysis therefore requires modeling both
+dimensions.
+
+While there are undoubtedly far more factors influencing wins (e.g., shooting
+efficiency/ability, turnovers, rebounding, pace, etc.), this study isolates 
+the role of shot distribution to understand its standalone predictive power.
+I use a binomial logistic regression model in which the log-odds of winning are
+determined by a linear combination of the proportion of shots taken/allowed by 
+a team each offensive and defensive shot band. Because the posterior distribution 
+of the model parameters is not available in closed form, I employ a Metropolis–Hastings 
+sampler to obtain posterior draws, enabling full uncertainty quantification and posterior
+predictive evaluation. This Bayesian framework offers advantages over classical
+approaches, mainly that it provides interpretable posterior distributions for each shot
+band’s effect, naturally incorporates parameter uncertainty into predictive
+estimates, and allows comparison of structural effects across seasons.
+
+The analysis focuses on two seasons separated by twenty years: 2004--05 and
+2024--25. This time span captures both the pre–three-point-revolution era and the
+fully modern, spacing-oriented NBA. Comparing results across these seasons
+allows us to quantify whether shot distribution has become more (or less)
+predictive of success over time. 
+
+Overall, this study provides a Bayesian perspective on the evolution of shot
+selection in professional basketball, revealing how the value of different shot
+types has shifted and how both offensive and defensive spatial tendencies
+jointly shape team performance.
+
+\section{Related Works}
+
+A substantial body of research examines how the spatial distribution of shots,
+rather than merely shooting efficiency, relates to team success in modern
+basketball. This literature can be divided into three major themes:
+(1) long term evolution of shot patterns, and (2) the rise of the three-point shot,
+the decline of the mid-range, and the effects of these trends on winning.
+
+\subsection{Evolution of NBA Shot Distribution}
+
+Wang and Zheng~\citep{wang2022changes} document league-wide trends in shooting
+patterns over the past decade, showing sharp declines in long mid-range
+attempts and concurrent increases in three-point volume. They also note that
+offensive and defensive field-goal percentages remain the strongest predictors
+of winning, linking shot location to macro-level team outcomes.
+
+Zajac et al.~\citep{zajac2023longterm} expand this view by studying forty
+consecutive NBA seasons. They find rising efficiency and volume from three, as
+well as stability in two-point accuracy, concluding that effective field-goal
+percentage (eFG\%), a metric that adjusts traditional field goal percentage by 
+fairly weighting 3-point attempts overwhelmingly determines win probability. 
+\[
+      eFG\% = \frac{FGM + 0.5 \times 3PM}{FGA}
+\]
+These results reinforce the idea that spatial shot tendencies shape league-wide 
+offensive performance.
+
+\subsection{Three-Point Revolution and Decline of Mid-Range Shooting}
+
+Kilcoyne~\citep{kilcoyne2020midrange} analyzes the decline of mid-range
+attempts in the context of basketball analytics. He finds that mid-range
+volume is negatively associated with team wins once efficiency is accounted
+for, supporting the common interpretation that these shots are dominated by
+higher-value alternatives (rim attempts or three-pointers).
+
+In contrast, Winn~\citep{winn2023threepoint} shows that three-point attempt rate
+is not always a statistically significant predictor of team success once other
+factors are controlled for. This highlights that volume alone is insufficient
+without context.
+
+\subsection{Positioning of This Work}
+
+The literature demonstrates that NBA shot distribution has changed dramatically 
+over time, and that winning correlates more strongly with efficiency than raw volume.
+
+This project adds to the existing literature by modeling team-level win
+probabilities directly as a function of \emph{both} offensive and defensive 
+shot-distance distributions using a Bayesian logistic framework. The Bayesian 
+approach improves on the works above  by providing full posterior uncertainty 
+quantification for each shot band’s effect, enabling richer interpretation and
+comparison across eras.
+
+\section{Model}
+
+\subsection{Data and notation}
+
+We analyze two NBA regular seasons, $s \in \{2004\text{--}05,\,2024\text{--}25\}$.
+For each season $s$ we observe $n_s = 30$ teams indexed by $i = 1,\dots,n_s$.
+Let
+\[
+y_{is} \in \{0,1,\dots,N\}
+\]
+denote the number of regular-season wins for team $i$ in season $s$, where
+$N = 82$ is the number of regular-season games.
+
+For each team we summarize its offensive and defensive shot distribution using
+the proportion of field-goal attempts (FGA) taken or allowed from four distance
+bands:
+\begin{align*}
+\text{Offense:}\quad &
+x^{\text{off}}_{is,0\text{--}3},
+\;
+x^{\text{off}}_{is,3\text{--}10},
+\;
+x^{\text{off}}_{is,10\text{--}16},
+\;
+x^{\text{off}}_{is,16\text{--}3P},\\[4pt]
+\text{Defense:}\quad &
+x^{\text{def}}_{is,0\text{--}3},
+\;
+x^{\text{def}}_{is,3\text{--}10},
+\;
+x^{\text{def}}_{is,10\text{--}16},
+\;
+x^{\text{def}}_{is,16\text{--}3P}.
+\end{align*}
+These correspond respectively to $0$--$3$ ft, $3$--$10$ ft, $10$--$16$ ft, and
+$16$ ft to the three-point line. The offensive and defensive three-point
+shares,
+\[
+x^{\text{off}}_{is,3P}, \quad x^{\text{def}}_{is,3P},
+\]
+are omitted from the regression design matrix to avoid perfect collinearity,
+but are later reconstructed from the results of the included features for 
+diagnostic and interpretive calculations.
+
+For season $s$, we collect the eight included shot-share features into a
+vector
+\[
+\mathbf{x}_{is}
+=
+\Big(
+x^{\text{off}}_{is,0\text{--}3},
+x^{\text{off}}_{is,3\text{--}10},
+x^{\text{off}}_{is,10\text{--}16},
+x^{\text{off}}_{is,16\text{--}3P},
+x^{\text{def}}_{is,0\text{--}3},
+x^{\text{def}}_{is,3\text{--}10},
+x^{\text{def}}_{is,10\text{--}16},
+x^{\text{def}}_{is,16\text{--}3P}
+\Big)^\top \in \mathbb{R}^8,
+\]
+so that the $(i,s)$ design row is $\mathbf{x}_{is}$ and the response is $y_{is}$.
+
+\subsection{Standardization of predictors}
+
+Before fitting, we standardize each feature dimension within a season.  Let
+$\mu_{s,j}$ and $\sigma_{s,j}$ denote the empirical mean and standard deviation
+of the $j$-th feature across teams in season $s$:
+\[
+\mu_{s,j} = \frac{1}{n_s} \sum_{i=1}^{n_s} x_{is,j}, 
+\qquad
+\sigma_{s,j}
+= \sqrt{\frac{1}{n_s} \sum_{i=1}^{n_s} \bigl(x_{is,j} - \mu_{s,j}\bigr)^2}.
+\]
+We then define standardized covariates
+\[
+z_{is,j} = \frac{x_{is,j} - \mu_{s,j}}{\sigma_{s,j}}, \qquad j = 1,\dots,8.
+\]
+In matrix notation we write
+\[
+\mathbf{z}_{is} = \bigl(z_{is,1},\dots,z_{is,8}\bigr)^\top,
+\]
+and stack these into a season-specific design matrix
+$Z_s \in \mathbb{R}^{n_s \times 8}$.
+
+\subsection{Likelihood}
+
+We model team wins via a Binomial likelihood with a logistic link.  For each
+team $i$ in season $s$,
+\begin{equation}
+  y_{is} \mid p_{is} \sim \text{Binomial}(N, p_{is}),
+  \label{eq:binom-like}
+\end{equation}
+where $p_{is} \in (0,1)$ is the underlying win probability for team $i$.
+
+The logit of $p_{is}$ is modeled as a linear function of the standardized
+offensive and defensive shot shares:
+\begin{equation}
+  \text{logit}(p_{is})
+  \;=\;
+  \alpha_s + \mathbf{z}_{is}^\top \boldsymbol{\beta}_s
+  \;=\;
+  \alpha_s + \sum_{j=1}^{8} \beta_{s,j} z_{is,j},
+  \label{eq:logit-linear}
+\end{equation}
+where $\alpha_s$ is a season-specific intercept and
+$\boldsymbol{\beta}_s = (\beta_{s,1},\dots,\beta_{s,8})^\top$ are the
+season-specific slope coefficients for the eight included bands (four offensive
+and four defensive).
+
+Rearranging \eqref{eq:logit-linear}, we arrive at an expression for the win
+probability:
+\begin{equation}
+  p_{is}
+  =
+  \sigma\!\bigl(
+    \alpha_s + \mathbf{z}_{is}^\top \boldsymbol{\beta}_s
+  \bigr)
+  =
+  \frac{
+    \exp\bigl(
+      \alpha_s + \mathbf{z}_{is}^\top \boldsymbol{\beta}_s
+    \bigr)
+  }{
+    1 + \exp\bigl(
+      \alpha_s + \mathbf{z}_{is}^\top \boldsymbol{\beta}_s
+    \bigr)
+  },
+  \label{eq:win-prob}
+\end{equation}
+where $\sigma(\cdot)$ denotes the logistic sigmoid function.
+
+Letting
+$\boldsymbol{\theta}_s = (\alpha_s,\boldsymbol{\beta}_s)^\top \in \mathbb{R}^9$,
+the season-$s$ log-likelihood for all teams is
+\begin{equation}
+  \ell_s(\boldsymbol{\theta}_s)
+  =
+  \sum_{i=1}^{n_s}
+  \Bigl[
+    y_{is} \log p_{is}(\boldsymbol{\theta}_s)
+    +
+    (N - y_{is}) \log (1 - p_{is}(\boldsymbol{\theta}_s))
+  \Bigr],
+  \label{eq:loglik}
+\end{equation}
+where $p_{is}(\boldsymbol{\theta}_s)$ is given by \eqref{eq:win-prob}.
+
+\subsection{Priors}
+
+We place independent Normal priors on the intercept and slope coefficients for
+each season.  For the intercept,
+\begin{equation}
+  \alpha_s \sim \mathcal{N}(0, \sigma_\alpha^2),
+  \qquad
+  \sigma_\alpha = 0.5,
+  \label{eq:prior-alpha}
+\end{equation}
+and for each slope coefficient,
+\begin{equation}
+  \beta_{s,j} \sim \mathcal{N}(0, \sigma_\beta^2),
+  \qquad
+  \sigma_\beta = 0.1,
+  \qquad
+  j = 1,\dots,8.
+  \label{eq:prior-betas}
+\end{equation}
+These priors are weakly informative on the standardized scale, encoding the
+prior belief that:
+\begin{enumerate}
+      \item The league-average team has roughly 50\%
+      win probability.
+
+      \item A one-standard-deviation change in any shot-share
+      feature is unlikely to change the log-odds of winning by more than roughly
+      $\pm 0.2$ to $\pm 0.3$.
+\end{enumerate}
+
+
+While the parameters undoubtedly have some correlation (particularly between parameters
+on the same side of the ball), we assume independence for simplicity reasons. Thus the 
+log-prior density for $\boldsymbol{\theta}_s$ is
+\begin{equation}
+  \log \pi(\boldsymbol{\theta}_s)
+  =
+  \log \mathcal{N}(\alpha_s \mid 0, \sigma_\alpha^2)
+  + \sum_{j=1}^{8} \log \mathcal{N}(\beta_{s,j} \mid 0, \sigma_\beta^2).
+  \label{eq:log-prior}
+\end{equation}
+
+\subsection{Posterior and MCMC sampling}
+
+Combining \eqref{eq:loglik} and \eqref{eq:log-prior}, the unnormalized log-posterior
+for season $s$ is
+\begin{equation}
+  \log \pi(\boldsymbol{\theta}_s \mid \{y_{is},\mathbf{z}_{is}\})
+  =
+  \ell_s(\boldsymbol{\theta}_s)
+  + \log \pi(\boldsymbol{\theta}_s).
+  \label{eq:log-post}
+\end{equation}
+Because of the logistic link and normal priors, the model is non-conjugate and there
+is no closed-form expression for the posterior distribution of
+$\boldsymbol{\theta}_s$.
+
+We therefore approximate the posterior via Markov chain Monte Carlo (MCMC),
+using the random-walk Metropolis algorithm.  For each season $s$ we run a
+single-chain sampleras follows:
+
+\begin{itemize}
+  \item Number of iterations:
+        $T = 105{,}000$ total proposals.
+  \item Burn-in:
+        the first $25{,}000$ iterations are discarded.
+  \item Proposal distribution:
+        for the current state $\boldsymbol{\theta}$,
+        \[
+        \boldsymbol{\theta}' = \boldsymbol{\theta} + \boldsymbol{\epsilon},
+        \qquad
+        \boldsymbol{\epsilon} \sim \mathcal{N}\bigl(\mathbf{0}, \Sigma_{\text{prop}}\bigr),
+        \]
+        with $\Sigma_{\text{prop}} = \text{diag}(s_0^2, s_1^2, \dots, s_8^2)$,
+        where $s_0 = 0.05$ for the intercept and $s_j = 0.05$ for all slopes.
+  \item Acceptance probability:
+        with $\log \pi(\cdot)$ given by \eqref{eq:log-post}, we accept
+        the proposal with probability
+        \[
+        \alpha(\boldsymbol{\theta},\boldsymbol{\theta}')
+        =
+        \min\!\left\{
+          1,\;
+          \exp\bigl[
+            \log \pi(\boldsymbol{\theta}') -
+            \log \pi(\boldsymbol{\theta})
+          \bigr]
+        \right\}
+        =
+        \min\!\left\{
+          1,\;
+          \frac{\boldsymbol{\theta}'}{\boldsymbol{\theta}}
+        \right\}.
+        \]
+\end{itemize}
+
+We initialize the chain at $\boldsymbol{\theta}^{(0)} = \mathbf{0}$ and fix
+the random seed to facilitate reproducibility.  For each season we record the
+acceptance rate and the trace of the log-posterior values
+$\log \pi(\boldsymbol{\theta}^{(t)})$.
+
+\subsection{MCMC diagnostics and effective sample size}
+
+To assess convergence and mixing of the random-walk Metropolis sampler, we
+examine trace plots, autocorrelation functions (ACFs), and effective sample
+size (ESS) estimates for all parameters. Figure \ref{fig:trace-alpha-both} shows
+representative trace and ACF plots for the parameter corresponding to the 0--3 ft 
+distance in the 2004--05 and 2024--25 seasons. The chain appears well-mixed, with 
+no visible nonstationarity and rapidly decaying autocorrelation.
+
+\begin{figure}[htbp]
+    \centering
+    \begin{minipage}{0.48\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{../output/trace_acf/2004-05_0-3_trace_acf.png}
+    \end{minipage}
+    \hfill
+    \begin{minipage}{0.48\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{../output/trace_acf/2024-25_0-3_trace_acf.png}
+    \end{minipage}
+    \caption{Trace and autocorrelation for the 0--3 ft parameter ($\beta_1$) for both seasons.}
+    \label{fig:trace-alpha-both}
+\end{figure}
+
+Effective sample size (ESS) values for the 2004--05 and 2024--25
+seasons are shown in Table ~\ref{tab:ess-both-seasons}. In
+both seasons, ESS values are sufficiently large (near a thousand or more), 
+indicating that the posterior summaries are reliable.
+
+\begin{table}[htbp]
+\centering
+\caption{ESS for 2004--05 and 2024--25 seasons.}
+\label{tab:ess-both-seasons}
+
+\begin{tabular}{l cc}
+\toprule
+& \multicolumn{2}{c}{\textbf{Effective Sample Size (ESS)}} \\
+\cmidrule(lr){2-3}
+\textbf{Parameter} 
+& \textbf{2004--05} 
+& \textbf{2024--25} \\
+\midrule
+$\alpha$         & 1798.7 & 2113.3 \\
+$0$--$3$ (off)   & 1094.2 & 918.8  \\
+$3$--$10$ (off)  & 1089.0 & 1166.2 \\
+$10$--$16$ (off) & 980.9  & 1365.5 \\
+$16$--3P (off)   & 1166.5 & 1119.2 \\
+$0$--$3$ (def)   & 809.8  & 704.9  \\
+$3$--$10$ (def)  & 902.2  & 797.9  \\
+$10$--$16$ (def) & 1160.0 & 1462.9 \\
+$16$--3P (def)   & 946.4  & 1264.0 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Posterior predictive fit and residual diagnostics}
+
+Posterior mean win probabilities $\hat{p}_{is}$ provide a simple summary of
+model fit. Figure ~\ref{fig:pred-vs-actual-side} compares posterior predicted
+win probabilities with observed "true" win rates for both seasons. The closer points
+lie to the 45-degree line, the better calibrated the model is. The 2024--25
+season exhibits noticeably stronger predictive alignment, consistent with the
+higher Brier skill score.
+
+\begin{figure}[htbp]
+    \centering
+    \begin{minipage}{0.48\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{../output/plots/2004-05_pred_vs_actual.png}
+    \end{minipage}
+    \hfill
+    \begin{minipage}{0.48\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{../output/plots/2024-25_pred_vs_actual.png}
+    \end{minipage}
+    \caption{Posterior mean predicted win probability vs.\ actual win rate for
+    both seasons.}
+    \label{fig:pred-vs-actual-side}
+\end{figure}
+
+Residual diagnostics evaluate whether the model suffers from systematic bias. 
+For each team we compute residuals
+\[
+r_{is} = \frac{y_{is}}{N} - \hat{p}_{is}.
+\]
+Sample residual plots are shown in Figure~\ref{fig:residual-side}, which displays
+residuals against the 0--3 ft offensive shot share for both seasons. No clear
+patterns of bias are visible, suggesting that the model adequately captures the
+relationship between shot distribution and winning. 
+
+\begin{figure}[htbp]
+    \centering
+    \begin{minipage}{0.48\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{../output/residuals_analysis/2004-05_residuals_0-3.png}
+    \end{minipage}
+    \hfill
+    \begin{minipage}{0.48\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{../output/residuals_analysis/2024-25_residuals_0-3.png}
+    \end{minipage}
+    \caption{Residuals vs.\ 0--3 ft offensive shot share for both seasons.}
+    \label{fig:residual-side}
+\end{figure}
+
+\subsection{Cross-validated performance}
+
+To assess out-of-sample predictive accuracy, we perform leave-one-out
+cross-validation within each season. For each team $i$ we refit the
+model on the remaining $n_s - 1$ teams and compute the posterior mean predicted
+win probability $\hat{p}^{(-i)}_{is}$. Predictive accuracy is quantified using
+the Brier score,
+\[
+\text{Brier}_s = \frac{1}{n_s} \sum_{i=1}^{n_s}
+\Bigl( \hat{p}^{(-i)}_{is} - \frac{y_{is}}{N} \Bigr)^2,
+\]
+and the Brier skill score, which compares the model to a baseline predictor
+that simply predicts the in-sample average win rate:
+\[
+\text{Skill}_s
+= 1 - \frac{\text{Brier}_s}{\text{Brier}_{\text{baseline}, s}}.
+\]
+
+Table~\ref{tab:brier-summary-both} reports the cross-validated Brier scores and
+skill scores for both seasons. The 2024--25 model demonstrates markedly higher
+predictive skill, indicating that offensive and defensive shot distribution
+explains substantially more variation in team success in the modern NBA than in
+the earlier era.
+
+\begin{table}[htbp]
+\centering
+\caption{Cross-validated Brier score summaries for both seasons.}
+\label{tab:brier-summary-both}
+
+\begin{tabular}{l cc}
+\toprule
+\textbf{Metric} 
+& \textbf{2004--05 Season} 
+& \textbf{2024--25 Season} \\
+\midrule
+Brier score              & 0.0237 & 0.0203 \\
+Baseline Brier score     & 0.0248 & 0.0274 \\
+Brier skill score        & 0.0425 & 0.2611 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Results}
+
+This section presents the estimated posterior effects of offensive and 
+defensive shot distribution on team success. Figure ~\ref{fig:post-forest-side} 
+displays the posterior mean and 95\% credible interval for every shot-distance 
+band are shown in the forest plots below. All effects are interpreted 
+on the log-odds scale per one standard-deviation change in shot share.
+Note that the 3P and def\_3P effects represent the implied contributions 
+of the omitted compositional bucket.
+
+\begin{figure}[htbp]
+    \centering
+    \begin{minipage}{0.48\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{../output/plots/2004-05_posterior_forest.png}
+    \end{minipage}
+    \hfill
+    \begin{minipage}{0.48\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{../output/plots/2024-25_posterior_forest.png}
+    \end{minipage}
+    \caption{Posterior effects of shot distribution on log-odds of winning (per SD change).}
+    \label{fig:post-forest-side}
+\end{figure}
+
+\subsection{2004--05 Season}
+
+Offensively, it is clear that three-point have a strong positive association with winning. 
+Mid-range bands (3--10, 10--16, 16--3P) on the other hand generally show neutral or negative 
+effects. Moreover, the graph shows that preventing opponents from shooting in the 
+effecient 3P zone was also a major separator between winning and losing teams, with conceding 
+three-point attempts being by far the largest defensive detriment.
+
+One notable observation for this season is the slightly negative effect for offensive rim 
+attempts (0--3 ft). While counterintuitive at first glance, this likely reflects that teams
+in this era took an excessive share of their shots at the rim. The linear nature of the model
+does not capture diminishing returns, so the overwhelming number of teams taking a high proportion
+of rim attempts due to the style of play may have led to this negative association.
+
+\subsection{2024--25 Season}
+
+In contrast to what one might expect, the three-point effect in 2024--25 weakens significantly, 
+with the interval mean being less than zero, indicating that aking more threes than league 
+average no longer provides the same marginal advantage. Additionally, several mid-range bands 
+now exhibit less negative or even slightly positive effects. The value of offensive rim attempts
+also explodes positively, suggesting that in the modern era where teams space the floor far
+more effectively, attacking the rim has become a more potent weapon. This result also somewhat
+validates the provided explanation for the negative rim effect in 2004--05. namely that the
+linear constraint of the model prevented capturing diminishing returns in an era where rim 
+attempts were overused. These patterns suggest that as the league has converged on analytically 
+optimized shot selection, marginal returns to additional three-point volume have diminished, and
+some teams may even benefit from reintroducing a more diversified shot profile.
+
+Defensively however, the effect of conceding large quantities of three-point attempts 
+remains negative, even exceeding the impact seen in 2004--05. This underscores that even if 
+taking more threes may not be as advantageous as before, preventing opponents from doing 
+so is critical. With defending the rim also as important as ever, it is clear that while the 
+optimal offensive shot profile is still debatable, modern defensive schemes must prioritize
+protecting the rim and the perimeter, while funneling opponents into mid-range areas.
+
+\subsection{Interpretation Summary}
+
+Overall, these results show that in 2004--05, exploiting high-efficiency zones (rim and three) 
+created substantial competitive differentiation.By 2024--25, league-wide strategic convergence 
+has flattened these advantages. Modern teams may gain edges through spacing that re-opens rim 
+opportunities, retaining credible mid-range threats, and implementing defensive schemes emphasizing 
+rim and perimeter protection while encouraging the mid-range attempts that increasingly unfamiliar
+to today's players.
+
+\section{Discussion}
+
+\noindent\textbf{Limitations.}
+Although informative, this analysis is subject to several important limitations:
+\begin{itemize}
+    \item The model incorporates only shot-distance distribution, not shot efficiency 
+    (FG\%, eFG\%, TS\%), and thus cannot distinguish whether teams are good at generating 
+    or defending specific shots.
+    \item The linear structure cannot capture nonlinear "sweet spots" or diminishing 
+    returns for particular shot types.
+    \item Pace, possessions, opponent strength, and other contextual variables are not included.
+    \item Only two seasons are analyzed, providing a limited sample for inference and 
+    reducing generalizability.
+    \item Potentially important factors such as coaching, injuries, roster changes, 
+    and defensive scheme are not modeled.
+\end{itemize}
+
+\noindent\textbf{Future Improvements.}
+Several extensions could strengthen and broaden the scope of this work:
+\begin{itemize}
+    \item Incorporate zone-specific shooting efficiency metrics and additional team 
+    performance indicators such as pace, turnover rate, rebound rate, and free-throw rate.
+    \item Extend the hierarchical framework using many seasons to jointly estimate 
+    league-wide and season-specific effects.
+    \item Move from season-level aggregates to game-by-game modeling to increase sample 
+    size and control for opponent-adjusted factors.
+    \item Evaluate posterior predictive performance by holding out entire games or entire seasons.
+    \item Introduce team-specific random effects to account for unobserved individual 
+    circumstances (e.g., coaching strategies or roster stability).
+\end{itemize}
+
+All code used in this analysis, including data processing pipelines, MCMC implementation,
+and visualization scripts, is available in the project repository: 
+
+\url{https://github.com/ethanbabel/Bayesian-Stats-Final-Project}.
+
+\bibliography{references}
+
+\end{document}
